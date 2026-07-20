@@ -6,22 +6,36 @@
   "use strict";
 
   let cache = null;
-  let fontkitRegistered = false;
 
-  function ensureFontkit() {
-    if (fontkitRegistered) return;
-    const PDFLib = global.PDFLib;
+  function getFontkit() {
     const fk = global.fontkit;
-    if (!PDFLib || !PDFLib.PDFDocument) {
-      throw new Error("PDFLib não carregado.");
-    }
     if (!fk) {
       throw new Error(
         "fontkit não carregado. Inclua extensao/vendor/fontkit.umd.min.js antes de pdf-fontes.js."
       );
     }
-    PDFLib.PDFDocument.registerFontkit(fk);
-    fontkitRegistered = true;
+    return fk;
+  }
+
+  /**
+   * Nesta build do pdf-lib, registerFontkit é método de INSTÂNCIA do PDFDocument
+   * (não estático em PDFDocument.registerFontkit).
+   */
+  function registerFontkitOn(pdf) {
+    if (!pdf) throw new Error("PDFDocument inválido.");
+    const fk = getFontkit();
+    if (typeof pdf.registerFontkit === "function") {
+      pdf.registerFontkit(fk);
+      return;
+    }
+    // fallback: builds mais novas usam API estática
+    const PDFDocument = global.PDFLib && global.PDFLib.PDFDocument;
+    if (PDFDocument && typeof PDFDocument.registerFontkit === "function") {
+      PDFDocument.registerFontkit(fk);
+      return;
+    }
+    // último recurso: atribui direto (mesmo efeito do prototype)
+    pdf.fontkit = fk;
   }
 
   async function fetchBytes(url) {
@@ -32,7 +46,7 @@
 
   async function loadFontBytes() {
     if (cache) return cache;
-    ensureFontkit();
+    getFontkit(); // valida cedo
     const base = "./extensao/vendor/fonts/";
     const [regular, bold] = await Promise.all([
       fetchBytes(base + "NotoSans-Regular.ttf"),
@@ -46,7 +60,7 @@
    * @param {import('pdf-lib').PDFDocument} pdf
    */
   async function embedNoto(pdf) {
-    ensureFontkit();
+    registerFontkitOn(pdf);
     const { regular, bold } = await loadFontBytes();
     const font = await pdf.embedFont(regular, { subset: true });
     const fontBold = await pdf.embedFont(bold, { subset: true });
