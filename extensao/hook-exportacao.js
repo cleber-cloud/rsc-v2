@@ -1,21 +1,19 @@
 /**
  * =============================================================================
- * BLOCO ADITIVO — pós-processamento do Pacote Consolidado ORIGINAL
+ * Exportação consolidada — somente PDFs (máx. 8)
  * =============================================================================
- * NÃO substitui o fluxo do app. Deixa o Assistente gerar o ZIP exatamente como
- * no site (Memorial_Descritivo.html, Requerimento_RSC.html, Anexos/, logos…).
+ * 01 - Requerimento_RSC.pdf
+ * 02 - Memorial_Descritivo.pdf
+ * 03+ - Anexo I … VI (só os que tiverem comprovantes; com capas e paginação)
  *
- * Únicas alterações no ZIP baixado:
- *  1) Coluna "Comprovantes" no Requerimento_RSC.html
- *  2) Arquivos ANEXOS.pdf / ANEXOS_parte_XX.pdf (merge, ≤190 MB, sem cortar PDF)
- *
- * Intercepta o download do arquivo RSC_TAE_Consolidado_*.zip (blob).
+ * - Não inclui arquivos soltos da pasta Anexos/
+ * - Não injeta coluna de páginas no requerimento
+ * - Exige descrição breve em todo PDF vinculado (também em backup antigo)
  * =============================================================================
  */
 (function () {
   "use strict";
 
-  const MAX_BYTES = 190 * 1024 * 1024;
   const IDB_NAME = "keyval-store";
   const IDB_STORE = "keyval";
   const STATE_KEY = "rsc-calculator-state";
@@ -23,9 +21,20 @@
   let processing = false;
 
   function toast(msg, type) {
-    // Sem UI flutuante — só console (interface = página original)
-    if (type === "error") console.error("[RSC ANEXOS]", msg);
-    else console.info("[RSC ANEXOS]", msg);
+    if (type === "error") console.error("[RSC Export]", msg);
+    else console.info("[RSC Export]", msg);
+    try {
+      const el = document.createElement("div");
+      el.setAttribute("role", "status");
+      el.style.cssText =
+        "position:fixed;bottom:1.25rem;left:50%;transform:translateX(-50%);z-index:99999;" +
+        "max-width:min(32rem,92vw);padding:0.75rem 1rem;border-radius:0.75rem;font:600 13px/1.4 system-ui,sans-serif;" +
+        "box-shadow:0 12px 40px rgba(0,0,0,.18);color:#fff;" +
+        (type === "error" ? "background:#b91c1c;" : type === "success" ? "background:#008037;" : "background:#0f766e;");
+      el.textContent = msg;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), type === "error" ? 7000 : 4000);
+    } catch (_) {}
   }
 
   function idbGet(key) {
@@ -64,117 +73,104 @@
     return raw;
   }
 
-  function esc(s) {
-    return String(s ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+  function pad2(n) {
+    return String(n).padStart(2, "0");
   }
 
-  /**
-   * Mesma agrupação do app original: por categoria I…VI, ordem de push nas selections.
-   */
-  function selectionsPorCategoria(state) {
-    const meta = window.RSC_CRITERIOS_META || {};
-    const c = {};
-    (state.selections || []).forEach((sel) => {
-      if (!(Number(sel.quantity) > 0)) return;
-      const m = meta[sel.criterionId];
-      const cat = (m && m.category) || String(sel.criterionId || "").split(".")[0] || "OUTROS";
-      if (!c[cat]) c[cat] = [];
-      c[cat].push(sel);
+  function extractHtmlParts(html) {
+    const styleTags = [];
+    String(html).replace(/<style[^>]*>[\s\S]*?<\/style>/gi, (m) => {
+      styleTags.push(m);
+      return "";
     });
-    return c;
+    let body = html;
+    const bm = String(html).match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    if (bm) body = bm[1];
+    // remove scripts
+    body = body.replace(/<script[\s\S]*?<\/script>/gi, "");
+    return { styles: styleTags.join("\n"), body };
   }
 
   /**
-   * Injeta coluna Comprovantes no HTML ORIGINAL do requerimento, sem reescrever o resto.
+   * Converte HTML string em PDF (Uint8Array) via html2pdf.js.
    */
-  function injetarColunaNoRequerimentoOriginal(html, comprovantesPorCriterio, state) {
-    if (!html || typeof html !== "string") return html;
-    let out = html;
-
-    // 1) Cabeçalho — após "Pontuação obtida" (só nas tabelas de critérios)
-    out = out.replace(
-      /(<th[^>]*>Pontua[cç][aã]o obtida<\/th>)\s*(\r?\n\s*)(<\/tr>)/gi,
-      '$1$2<th style="width:130px;text-align:center;">Comprovantes</th>$2$3'
-    );
-
-    // 2) Por bloco "Critério X - ...", preencher cada linha de dados
-    const byCat = selectionsPorCategoria(state);
-    const cats = ["I", "II", "III", "IV", "V", "VI"];
-
-    for (const cat of cats) {
-      const sels = byCat[cat] || [];
-      if (!sels.length) continue;
-
-      // Localiza o bloco do critério (título + table)
-      const titleRe = new RegExp(
-        "(Crit[ée]rio\\s+" +
-          cat +
-          "\\s*[-–—][\\s\\S]*?<table[^>]*class=[\"']criteria-table[\"'][^>]*>)([\\s\\S]*?)(</table>)",
-        "i"
-      );
-      out = out.replace(titleRe, (full, head, body, tail) => {
-        let rowIdx = 0;
-        // Linhas <tr> que não são subtotal/total
-        const newBody = body.replace(/<tr(\s[^>]*)?>[\s\S]*?<\/tr>/gi, (tr) => {
-          if (/subtotal-row|total-row/i.test(tr)) return tr;
-          // precisa ter células de dados (5 tds típicos)
-          const tds = tr.match(/<td[\s\S]*?<\/td>/gi) || [];
-          if (tds.length < 5) return tr;
-          // se já tem 6ª coluna de comprovantes (reprocessamento), não duplicar
-          if (tds.length >= 6 && /N[aã]o anexado|P[aá]g\.|Anexo P[aá]g/i.test(tds[5])) {
-            return tr;
-          }
-
-          const sel = sels[rowIdx++];
-          const texto = sel
-            ? comprovantesPorCriterio[sel.criterionId] || "Não anexado"
-            : "Não anexado";
-
-          // Insere <td> antes do </tr>
-          if (tds.length === 5) {
-            return tr.replace(
-              /<\/tr>\s*$/i,
-              `<td style="text-align:center;font-size:11px;">${esc(texto)}</td>\n      </tr>`
-            );
-          }
-          // Se já há 6ª td vazia (legado do template), substitui a última
-          if (tds.length >= 6) {
-            let n = 0;
-            return tr.replace(/<td[\s\S]*?<\/td>/gi, (td) => {
-              n++;
-              if (n === 6) {
-                return `<td style="text-align:center;font-size:11px;">${esc(texto)}</td>`;
-              }
-              return td;
-            });
-          }
-          return tr;
-        });
-        return head + newBody + tail;
-      });
+  async function htmlToPdfBytes(html, opts) {
+    if (!window.html2pdf) {
+      throw new Error("html2pdf não carregado");
     }
 
-    // 3) Linha TOTAL (tfoot): garantir célula extra se necessário
-    out = out.replace(
-      /(<tr class="total-row">[\s\S]*?<\/tr>)/i,
-      (tr) => {
-        const tds = tr.match(/<td[\s\S]*?<\/td>/gi) || [];
-        // colspan 4 + 1 vazio = 2 tags; com comprovantes queremos +1 vazio
-        if (tds.length === 2 && !/colspan="5"/i.test(tr)) {
-          return tr.replace(/<\/tr>/i, "<td></td></tr>");
-        }
-        return tr;
-      }
+    let htmlWork = html;
+
+    // Remove possíveis colunas de comprovantes/paginação se existirem
+    htmlWork = htmlWork.replace(/<th[^>]*>\s*Comprovantes\s*<\/th>/gi, "");
+    htmlWork = htmlWork.replace(
+      /<td[^>]*>\s*(N[aã]o anexado|P[aá]g\.|Anexo P[aá]g)[\s\S]*?<\/td>/gi,
+      ""
     );
 
-    return out;
+    // Injetar imagens do ZIP como data URL (somente em src=)
+    if (opts && opts.assetMap) {
+      htmlWork = htmlWork.replace(
+        /src=(["'])([^"']+)\1/gi,
+        (full, q, src) => {
+          const base = String(src).split("/").pop().split("?")[0];
+          const dataUrl =
+            opts.assetMap[src] ||
+            opts.assetMap[base] ||
+            opts.assetMap[decodeURIComponent(base)];
+          if (dataUrl && String(dataUrl).startsWith("data:")) {
+            return `src=${q}${dataUrl}${q}`;
+          }
+          return full;
+        }
+      );
+    }
+
+    const parts = extractHtmlParts(htmlWork);
+    const host = document.createElement("div");
+    host.style.cssText =
+      "position:fixed;left:-10000px;top:0;width:210mm;background:#fff;z-index:-1;color:#111;";
+    host.innerHTML = parts.styles + parts.body;
+    document.body.appendChild(host);
+
+    try {
+      const worker = window
+        .html2pdf()
+        .set({
+          margin: [10, 10, 12, 10],
+          filename: "doc.pdf",
+          image: { type: "jpeg", quality: 0.95 },
+          html2canvas: {
+            scale: 2,
+            useCORS: true,
+            logging: false,
+            windowWidth: 900,
+          },
+          jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+          pagebreak: { mode: ["css", "legacy"] },
+        })
+        .from(host);
+
+      const ab = await worker.outputPdf("arraybuffer");
+      return new Uint8Array(ab);
+    } finally {
+      host.remove();
+    }
   }
 
-  async function enriquecerZipBlob(blob) {
+  async function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = reject;
+      r.readAsDataURL(blob);
+    });
+  }
+
+  /**
+   * Monta ZIP final só com PDFs numerados.
+   */
+  async function montarPacotePdfs(originalZipBlob) {
     if (!window.JSZip) throw new Error("JSZip não carregado");
     if (!window.RSCAnexosConsolidados) throw new Error("Módulo de anexos não carregado");
     if (!window.PDFLib) throw new Error("PDFLib não carregado");
@@ -182,38 +178,81 @@
     const state = await loadState();
     if (!state) throw new Error("Estado do formulário não encontrado no navegador");
 
-    const zip = await JSZip.loadAsync(blob);
+    // Validação: descrição breve obrigatória
+    const faltando = window.RSCAnexosConsolidados.listarSemDescricao(
+      state.selections || [],
+      state.documents || []
+    );
+    if (faltando.length) {
+      const amostra = faltando
+        .slice(0, 3)
+        .map((f) => `${f.criterionId}: ${f.name}`)
+        .join("; ");
+      throw new Error(
+        `Há ${faltando.length} anexo(s) sem descrição breve. Preencha o campo "Descreva brevemente o anexo" em cada arquivo (critérios: ${amostra}).`
+      );
+    }
 
-    // --- ANEXOS consolidados (aditivo; mantém pasta Anexos/ original) ---
+    const srcZip = await JSZip.loadAsync(originalZipBlob);
+    const assetMap = {};
+
+    // Logos / brasões do ZIP original → data URL
+    for (const path of Object.keys(srcZip.files)) {
+      const f = srcZip.files[path];
+      if (f.dir) continue;
+      if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(path)) continue;
+      try {
+        const blob = await f.async("blob");
+        const dataUrl = await blobToDataUrl(blob);
+        const base = path.split("/").pop();
+        assetMap[base] = dataUrl;
+        assetMap[path] = dataUrl;
+      } catch (_) {}
+    }
+
+    const out = new JSZip();
+    let seq = 1;
+
+    // 01 Requerimento
+    const reqFile =
+      srcZip.file("Requerimento_RSC.html") ||
+      (srcZip.file(/Requerimento.*\.html$/i) || [])[0];
+    if (!reqFile) throw new Error("Requerimento_RSC.html não encontrado no pacote");
+    const reqHtml = await reqFile.async("string");
+    toast("Convertendo Requerimento para PDF…", "info");
+    const reqPdf = await htmlToPdfBytes(reqHtml, { assetMap });
+    out.file(`${pad2(seq)} - Requerimento_RSC.pdf`, reqPdf);
+    seq++;
+
+    // 02 Memorial
+    const memFile =
+      srcZip.file("Memorial_Descritivo.html") ||
+      (srcZip.file(/Memorial.*\.html$/i) || [])[0];
+    if (!memFile) throw new Error("Memorial_Descritivo.html não encontrado no pacote");
+    const memHtml = await memFile.async("string");
+    toast("Convertendo Memorial para PDF…", "info");
+    const memPdf = await htmlToPdfBytes(memHtml, { assetMap });
+    out.file(`${pad2(seq)} - Memorial_Descritivo.pdf`, memPdf);
+    seq++;
+
+    // 03+ Anexos I–VI
+    toast("Gerando Anexos I–VI com capas…", "info");
     const order = window.RSC_CRITERIOS_ORDEM || [];
-    const anexos = await window.RSCAnexosConsolidados.montarAnexosConsolidados({
+    const { anexos } = await window.RSCAnexosConsolidados.montarAnexosPorCategoria({
       selections: state.selections || [],
       documents: state.documents || [],
       criteriaOrder: order,
-      maxBytes: MAX_BYTES,
+      criteriaMeta: window.RSC_CRITERIOS_META,
+      categorias: window.RSC_CATEGORIAS,
     });
 
-    for (const parte of anexos.partes) {
-      zip.file(parte.nome, parte.bytes);
+    for (const a of anexos) {
+      out.file(`${pad2(seq)} - ${a.nomeArquivo}`, a.bytes);
+      seq++;
     }
 
-    // --- Requerimento original + coluna ---
-    const reqFile =
-      zip.file("Requerimento_RSC.html") ||
-      zip.file(/Requerimento.*\.html$/i)[0];
-    if (reqFile) {
-      const html = await reqFile.async("string");
-      const novo = injetarColunaNoRequerimentoOriginal(
-        html,
-        anexos.comprovantesPorCriterio,
-        state
-      );
-      zip.file(reqFile.name, novo);
-    }
-
-    // Não mexer em Memorial_Descritivo.html, logos, Anexos/ individuais, etc.
-
-    return zip.generateAsync({
+    // ZIP final (sem pasta Anexos/, sem HTML, sem soltos)
+    return out.generateAsync({
       type: "blob",
       compression: "DEFLATE",
       compressionOptions: { level: 9 },
@@ -226,10 +265,6 @@
     return /RSC_TAE_Consolidado/i.test(d) && /\.zip$/i.test(d);
   }
 
-  /**
-   * Intercepta apenas o clique de download do ZIP consolidado gerado pelo app.
-   * Qualquer outro download (backup, etc.) segue normal.
-   */
   function installDownloadHook() {
     const nativeClick = HTMLAnchorElement.prototype.click;
 
@@ -243,34 +278,31 @@
         ) {
           const anchor = this;
           const href = anchor.href;
-          const download = anchor.download;
+          const download = String(anchor.download || "RSC_TAE_Consolidado.zip");
 
           processing = true;
-          toast("Preparando pacote (coluna Comprovantes + ANEXOS)…", "info");
+          toast("Preparando pacote (somente PDFs)…", "info");
 
           (async () => {
             try {
               const res = await fetch(href);
               const originalBlob = await res.blob();
-              const newBlob = await enriquecerZipBlob(originalBlob);
+              const newBlob = await montarPacotePdfs(originalBlob);
               const url = URL.createObjectURL(newBlob);
               const a = document.createElement("a");
               a.href = url;
-              a.download = download;
-              // usar click nativo para não reentrar no patch de forma errada
+              // mantém nome base, deixa claro que é o pacote PDF
+              a.download = download.replace(/\.zip$/i, "_PDFs.zip");
               nativeClick.call(a);
-              setTimeout(() => URL.revokeObjectURL(url), 3000);
-              toast("Pacote consolidado pronto (original + ANEXOS + Comprovantes).", "success");
+              setTimeout(() => URL.revokeObjectURL(url), 4000);
+              toast(
+                "Pacote pronto: Requerimento, Memorial e Anexos I–VI em PDF.",
+                "success"
+              );
             } catch (err) {
               console.error("[RSC Extensão]", err);
-              toast(
-                "Falha ao enriquecer pacote; baixando original. " + (err.message || ""),
-                "error"
-              );
-              // fallback: download original intacto
-              try {
-                nativeClick.call(anchor);
-              } catch (_) {}
+              toast(err.message || "Falha ao gerar pacote PDF.", "error");
+              // NÃO baixa o original com arquivos soltos — força correção
             } finally {
               processing = false;
               try {
@@ -278,7 +310,7 @@
               } catch (_) {}
             }
           })();
-          return; // não dispara o click original agora
+          return;
         }
       } catch (e) {
         console.error(e);
@@ -286,7 +318,9 @@
       return nativeClick.apply(this, arguments);
     };
 
-    console.info("[RSC ANEXOS] Pacote consolidado: coluna Comprovantes + PDFs mesclados.");
+    console.info(
+      "[RSC Export] Pacote: 01 Requerimento, 02 Memorial, 03+ Anexos (PDF). Sem soltos."
+    );
   }
 
   if (document.readyState === "loading") {
@@ -296,8 +330,7 @@
   }
 
   window.RSCExtensaoExportacao = {
-    enriquecerZipBlob,
-    injetarColunaNoRequerimentoOriginal,
+    montarPacotePdfs,
     loadState,
   };
 })();

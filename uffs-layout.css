@@ -185,9 +185,8 @@ footer.mt-24 .h-6.w-px{background:rgba(255,255,255,.35)!important;}
 
 .font-ufes{font-family:"Fira Sans","Segoe UI",Arial,sans-serif!important;}
 
-/* Caixinha de título do anexo (após carregar arquivo) */
+/* Descrição breve do anexo (obrigatória) */
 input[id^="anexo-titulo-"]{
-  border-color:#c5dfcf!important;
   background:#f7fbf8!important;
 }
 input[id^="anexo-titulo-"]:focus{
@@ -196,4 +195,7 @@ input[id^="anexo-titulo-"]:focus{
 }
 label[for^="anexo-titulo-"]{
   color:var(--uffs-green)!important;
+  text-transform:none!important;
+  letter-spacing:0!important;
+  font-size:11px!important;
 }
