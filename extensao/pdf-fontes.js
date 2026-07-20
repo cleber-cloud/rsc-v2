@@ -84,7 +84,7 @@
     fmtPt,
     A4: { width: 595.28, height: 841.89 },
     // Descrição breve: ~2–3 linhas na capa com fonte 12
-    DESC_MAX_CHARS: 220,
-    DESC_MEDIA_PALAVRAS: 35,
+    DESC_MAX_CHARS: 500,
+    DESC_MEDIA_PALAVRAS: 80,
   };
 })(typeof window !== "undefined" ? window : globalThis);
