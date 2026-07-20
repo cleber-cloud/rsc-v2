@@ -5,12 +5,12 @@ Esta pasta está **pronta** para o GitHub Pages (site estático).
 ## Conteúdo
 
 - `index.html` — app completa  
-- `_next/` — JS/CSS/fontes  
+- `next/` — JS/CSS/fontes (nome sem `_` para o GitHub Pages/Jekyll servir corretamente)  
 - `extensao/` — ANEXOS consolidados + importar backup  
 - logos, `uffs-layout.css`  
-- **`.nojekyll`** — obrigatório (senão o GitHub ignora a pasta `_next`)
+- **`.nojekyll`** — recomendado no Pages  
 
-Caminhos são **relativos** (`./_next/...`), para funcionar em:
+Caminhos são **relativos** (`./next/...`), para funcionar em:
 
 `https://SEU_USUARIO.github.io/NOME_DO_REPO/`
 
@@ -92,8 +92,8 @@ O Pages atualiza sozinho em alguns minutos.
 
 | Problema | Solução |
 |----------|---------|
-| Página em branco / 404 em `_next` | Falta `.nojekyll` ou pasta errada no Pages |
-| CSS/JS não carregam | Confirme que o site é `...github.io/NOME_REPO/` e os arquivos estão na raiz do repo |
+| Página em branco / 404 em JS/CSS | A pasta deve se chamar `next/` (não `_next/`); confira a raiz do repo |
+| CSS/JS não carregam | Confirme a URL `...github.io/NOME_REPO/` e que o Pages usa branch `main` / root |
 | “Site not found” | Aguarde o deploy verde em Actions / Settings → Pages |
 
 ---
