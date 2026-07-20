@@ -23,19 +23,9 @@
   let processing = false;
 
   function toast(msg, type) {
-    const el = document.createElement("div");
-    el.setAttribute("role", "status");
-    el.style.cssText =
-      "position:fixed;top:1rem;right:1rem;z-index:99999;max-width:24rem;padding:0.85rem 1rem;" +
-      "border-radius:0.5rem;font:600 13px/1.4 Segoe UI,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.18);" +
-      (type === "error"
-        ? "background:#fef2f2;color:#991b1b;border:1px solid #fecaca;"
-        : type === "info"
-          ? "background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;"
-          : "background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;");
-    el.textContent = msg;
-    document.body.appendChild(el);
-    setTimeout(() => el.remove(), 4500);
+    // Sem UI flutuante — só console (interface = página original)
+    if (type === "error") console.error("[RSC ANEXOS]", msg);
+    else console.info("[RSC ANEXOS]", msg);
   }
 
   function idbGet(key) {
@@ -296,9 +286,7 @@
       return nativeClick.apply(this, arguments);
     };
 
-    console.info(
-      "[RSC Extensão] Pós-processamento do Pacote Consolidado ativo (sem alterar o restante do app)."
-    );
+    console.info("[RSC ANEXOS] Pacote consolidado: coluna Comprovantes + PDFs mesclados.");
   }
 
   if (document.readyState === "loading") {
