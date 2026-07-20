@@ -1,10 +1,28 @@
 /**
  * Fontes Noto Sans (pt-BR) para capas e documentos PDF.
+ * Requer @pdf-lib/fontkit registrado em PDFDocument.
  */
 (function (global) {
   "use strict";
 
   let cache = null;
+  let fontkitRegistered = false;
+
+  function ensureFontkit() {
+    if (fontkitRegistered) return;
+    const PDFLib = global.PDFLib;
+    const fk = global.fontkit;
+    if (!PDFLib || !PDFLib.PDFDocument) {
+      throw new Error("PDFLib não carregado.");
+    }
+    if (!fk) {
+      throw new Error(
+        "fontkit não carregado. Inclua extensao/vendor/fontkit.umd.min.js antes de pdf-fontes.js."
+      );
+    }
+    PDFLib.PDFDocument.registerFontkit(fk);
+    fontkitRegistered = true;
+  }
 
   async function fetchBytes(url) {
     const res = await fetch(url);
@@ -14,6 +32,7 @@
 
   async function loadFontBytes() {
     if (cache) return cache;
+    ensureFontkit();
     const base = "./extensao/vendor/fonts/";
     const [regular, bold] = await Promise.all([
       fetchBytes(base + "NotoSans-Regular.ttf"),
@@ -27,6 +46,7 @@
    * @param {import('pdf-lib').PDFDocument} pdf
    */
   async function embedNoto(pdf) {
+    ensureFontkit();
     const { regular, bold } = await loadFontBytes();
     const font = await pdf.embedFont(regular, { subset: true });
     const fontBold = await pdf.embedFont(bold, { subset: true });
