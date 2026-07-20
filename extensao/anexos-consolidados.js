@@ -1,9 +1,6 @@
 /**
  * =============================================================================
- * ANEXOS I–VI com capa (modelo COMPROVANTES / REQUISITO)
- * =============================================================================
- * Até 6 PDFs (um por categoria I…VI). Dentro do mesmo anexo, repete a capa
- * sempre que muda o critério. Paginação relativa ao arquivo do anexo.
+ * ANEXOS I–VI com capa (modelo COMPROVANTES / REQUISITO) — pt-BR
  * =============================================================================
  */
 (function (global) {
@@ -28,38 +25,10 @@
     return n.endsWith(".pdf") || t.includes("pdf");
   }
 
-  function fmtPt(n) {
-    const x = Number(n);
-    if (!Number.isFinite(x)) return "0";
-    return x.toLocaleString("pt-BR", {
-      minimumFractionDigits: Number.isInteger(x) ? 0 : 1,
-      maximumFractionDigits: 2,
-    });
-  }
-
   function itemNumeroFromId(criterionId) {
     const id = String(criterionId || "");
     const m = id.match(/^[IVX]+\.(\d+)/i);
     return m ? m[1] : id;
-  }
-
-  function wrapText(text, font, size, maxWidth) {
-    const words = String(text || "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .split(" ");
-    const lines = [];
-    let line = "";
-    for (const w of words) {
-      const test = line ? line + " " + w : w;
-      if (font.widthOfTextAtSize(test, size) <= maxWidth) line = test;
-      else {
-        if (line) lines.push(line);
-        line = w;
-      }
-    }
-    if (line) lines.push(line);
-    return lines.length ? lines : [""];
   }
 
   async function contagemPaginasPdf(bytes) {
@@ -68,85 +37,94 @@
     return pdf.getPageCount();
   }
 
-  async function loadFont(pdf) {
-    const { StandardFonts } = global.PDFLib;
-    try {
-      const candidates = [
-        "./next/static/media/cc27cf3ff100ea21-s.p.ttf",
-        "next/static/media/cc27cf3ff100ea21-s.p.ttf",
-      ];
-      for (const url of candidates) {
-        try {
-          const res = await fetch(url);
-          if (!res.ok) continue;
-          const buf = await res.arrayBuffer();
-          const font = await pdf.embedFont(buf, { subset: true });
-          return { font, fontBold: font, embedded: true };
-        } catch (_) {}
-      }
-    } catch (_) {}
-    const font = await pdf.embedFont(StandardFonts.Helvetica);
-    const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
-    return { font, fontBold, embedded: false };
-  }
-
-  function safeText(s, embedded) {
-    const t = String(s ?? "");
-    if (embedded) return t;
-    return t.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  }
-
-  async function adicionarCapas(outPdf, opts) {
-    const { font, fontBold, embedded } = await loadFont(outPdf);
+  /**
+   * Desenha capa(s) com fonte maior e texto em português correto.
+   */
+  async function adicionarCapas(outPdf, opts, fonts) {
+    const { font, fontBold } = fonts;
+    const wrap = global.RSCPdfFontes.wrapText;
+    const fmt = global.RSCPdfFontes.fmtPt;
     const pageWidth = 595.28;
     const pageHeight = 841.89;
-    const margin = 56;
+    const margin = 50;
     const maxW = pageWidth - margin * 2;
-    const S = (t) => safeText(t, embedded);
     const black = global.PDFLib.rgb(0.05, 0.05, 0.05);
 
+    // Tamanhos aumentados
+    const SZ = {
+      anexo: 20,
+      requisito: 13,
+      item: 12.5,
+      tabela: 11,
+      tabelaHead: 11,
+      comprovantesTitulo: 14,
+      comprovantesItem: 12,
+    };
+
     let page = outPdf.addPage([pageWidth, pageHeight]);
-    let y = pageHeight - 72;
+    let y = pageHeight - 64;
     let coverPages = 1;
 
     function newPage() {
       page = outPdf.addPage([pageWidth, pageHeight]);
-      y = pageHeight - 72;
+      y = pageHeight - 64;
       coverPages++;
     }
 
     function ensureSpace(h) {
-      if (y - h < 50) newPage();
+      if (y - h < 48) newPage();
     }
 
     function drawLines(lines, size, bold, lineH, align) {
       for (const ln of lines) {
-        ensureSpace(lineH);
-        const text = S(ln);
+        ensureSpace(lineH + 2);
         const f = bold ? fontBold : font;
         let x = margin;
         if (align === "center") {
-          const w = f.widthOfTextAtSize(text, size);
-          x = (pageWidth - w) / 2;
+          x = (pageWidth - f.widthOfTextAtSize(ln, size)) / 2;
         }
-        page.drawText(text, { x, y, size, font: f, color: black });
+        page.drawText(ln, {
+          x,
+          y: y - size,
+          size,
+          font: f,
+          color: black,
+        });
         y -= lineH;
       }
     }
 
-    drawLines([`ANEXO ${opts.category}`], 16, true, 22, "center");
-    y -= 18;
+    // ANEXO X
+    drawLines([`ANEXO ${opts.category}`], SZ.anexo, true, 28, "center");
+    y -= 20;
 
-    const reqTitle = `REQUISITO ${opts.category} - ${opts.categoryTitle || ""}`;
-    drawLines(wrapText(reqTitle, fontBold, 11, maxW), 11, true, 15, "left");
-    y -= 14;
+    // REQUISITO em CAIXA ALTA
+    const reqTitle = `REQUISITO ${opts.category} - ${String(
+      opts.categoryTitle || ""
+    ).toUpperCase()}`;
+    drawLines(
+      wrap(reqTitle, fontBold, SZ.requisito, maxW),
+      SZ.requisito,
+      true,
+      18,
+      "left"
+    );
+    y -= 16;
 
+    // Item
     const itemHead = `Item ${opts.itemNum} - ${opts.itemDescription || ""}`;
-    drawLines(wrapText(itemHead, font, 11, maxW), 11, false, 15, "left");
-    y -= 18;
+    drawLines(
+      wrap(itemHead, font, SZ.item, maxW),
+      SZ.item,
+      false,
+      17,
+      "left"
+    );
+    y -= 20;
 
-    const rowH = 22;
-    ensureSpace(rowH * 3 + 20);
+    // Tabela
+    const rowH = 26;
+    ensureSpace(rowH * 3 + 16);
     const col1 = margin;
     const col2 = margin + maxW * 0.55;
     const tableTop = y;
@@ -158,87 +136,92 @@
       width: tableW,
       height: rowH * 3,
       borderColor: black,
-      borderWidth: 0.8,
+      borderWidth: 1,
     });
     page.drawLine({
       start: { x: col1, y: tableTop - rowH },
       end: { x: col1 + tableW, y: tableTop - rowH },
-      thickness: 0.6,
+      thickness: 0.8,
       color: black,
     });
     page.drawLine({
       start: { x: col1, y: tableTop - rowH * 2 },
       end: { x: col1 + tableW, y: tableTop - rowH * 2 },
-      thickness: 0.6,
+      thickness: 0.8,
       color: black,
     });
     page.drawLine({
       start: { x: col2, y: tableTop },
       end: { x: col2, y: tableTop - rowH * 3 },
-      thickness: 0.6,
+      thickness: 0.8,
       color: black,
     });
 
-    const cellPad = 6;
-    page.drawText(S("UNIDADE DE MEDIDA"), {
+    const cellPad = 8;
+    const mid1 = tableTop - rowH * 0.5 - SZ.tabelaHead / 2;
+    const mid2 = tableTop - rowH * 1.5 - SZ.tabela / 2;
+    const mid3 = tableTop - rowH * 2.5 - SZ.tabela / 2;
+
+    page.drawText("UNIDADE DE MEDIDA", {
       x: col1 + cellPad,
-      y: tableTop - 15,
-      size: 9,
+      y: mid1,
+      size: SZ.tabelaHead,
       font: fontBold,
       color: black,
     });
-    page.drawText(S("PONTOS"), {
+    page.drawText("PONTOS", {
       x: col2 + cellPad,
-      y: tableTop - 15,
-      size: 9,
+      y: mid1,
+      size: SZ.tabelaHead,
       font: fontBold,
       color: black,
     });
-    page.drawText(S(opts.unit || "-"), {
+    page.drawText(String(opts.unit || "—"), {
       x: col1 + cellPad,
-      y: tableTop - rowH - 15,
-      size: 10,
+      y: mid2,
+      size: SZ.tabela,
       font,
       color: black,
     });
-    page.drawText(S(fmtPt(opts.pointsPerUnit)), {
+    page.drawText(fmt(opts.pointsPerUnit), {
       x: col2 + cellPad,
-      y: tableTop - rowH - 15,
-      size: 10,
+      y: mid2,
+      size: SZ.tabela,
       font,
       color: black,
     });
     const q = Number(opts.quantity) || 0;
     const total = q * (Number(opts.pointsPerUnit) || 0);
-    page.drawText(S(`Total de ${String(q).padStart(2, "0")} unidade(s)`), {
+    page.drawText(`Total de ${String(q).padStart(2, "0")} unidade(s)`, {
       x: col1 + cellPad,
-      y: tableTop - rowH * 2 - 15,
-      size: 10,
+      y: mid3,
+      size: SZ.tabela,
       font,
       color: black,
     });
     page.drawText(
-      S(`Total (${fmtPt(opts.pointsPerUnit)} X ${q}) = ${fmtPt(total)}`),
+      `Total (${fmt(opts.pointsPerUnit)} × ${q}) = ${fmt(total)}`,
       {
         x: col2 + cellPad,
-        y: tableTop - rowH * 2 - 15,
-        size: 10,
+        y: mid3,
+        size: SZ.tabela,
         font: fontBold,
         color: black,
       }
     );
 
-    y = tableTop - rowH * 3 - 28;
-    drawLines(["COMPROVANTES:"], 12, true, 18, "left");
-    y -= 6;
+    y = tableTop - rowH * 3 - 32;
+
+    drawLines(["COMPROVANTES:"], SZ.comprovantesTitulo, true, 22, "left");
+    y -= 8;
 
     const lista = opts.comprovantes || [];
     if (!lista.length) {
       drawLines(
         ["Nenhum comprovante em PDF anexado a este item."],
-        10,
+        SZ.comprovantesItem,
         false,
-        14,
+        17,
         "left"
       );
     } else {
@@ -248,8 +231,14 @@
             ? `(pág. ${c.startPage})`
             : `(pág. ${c.startPage} a ${c.endPage})`;
         const line = `${idx + 1}- ${c.title || c.name || "Comprovante"} ${pag}`;
-        drawLines(wrapText(line, font, 10, maxW), 10, false, 14, "left");
-        y -= 4;
+        drawLines(
+          wrap(line, font, SZ.comprovantesItem, maxW),
+          SZ.comprovantesItem,
+          false,
+          17,
+          "left"
+        );
+        y -= 6;
       });
     }
 
@@ -334,14 +323,13 @@
     return faltando;
   }
 
-  /**
-   * Monta um PDF de item (capa + comprovantes) com paginação correta na capa.
-   */
-  async function montarItemPdf(item, cat, catTitle, pageCursorStart) {
+  async function montarItemPdf(item, cat, catTitle, pageCursorStart, fonts) {
     const { PDFDocument } = global.PDFLib;
 
     async function build(coverPagesGuess) {
       const pdf = await PDFDocument.create();
+      // re-embed fonts no PDF temporário
+      const itemFonts = await global.RSCPdfFontes.embedNoto(pdf);
       let next = pageCursorStart + coverPagesGuess;
       const comprovantes = item.docs.map((d) => {
         const start = next;
@@ -354,16 +342,20 @@
           endPage: end,
         };
       });
-      const coverPages = await adicionarCapas(pdf, {
-        category: cat,
-        categoryTitle: catTitle,
-        itemNum: itemNumeroFromId(item.criterionId),
-        itemDescription: item.description,
-        unit: item.unit,
-        pointsPerUnit: item.pointsPerUnit,
-        quantity: item.quantity,
-        comprovantes,
-      });
+      const coverPages = await adicionarCapas(
+        pdf,
+        {
+          category: cat,
+          categoryTitle: catTitle,
+          itemNum: itemNumeroFromId(item.criterionId),
+          itemDescription: item.description,
+          unit: item.unit,
+          pointsPerUnit: item.pointsPerUnit,
+          quantity: item.quantity,
+          comprovantes,
+        },
+        itemFonts
+      );
       for (const d of item.docs) {
         await mesclarPaginas(pdf, d.bytes);
       }
@@ -381,7 +373,10 @@
 
   async function montarAnexosPorCategoria(opts) {
     if (!global.PDFLib || !global.PDFLib.PDFDocument) {
-      throw new Error("PDFLib nao carregado.");
+      throw new Error("PDFLib não carregado.");
+    }
+    if (!global.RSCPdfFontes) {
+      throw new Error("RSCPdfFontes não carregado.");
     }
 
     const meta = opts.criteriaMeta || global.RSC_CRITERIOS_META || {};
@@ -430,7 +425,8 @@
           item,
           cat,
           catTitles[cat] || "",
-          pageCursor
+          pageCursor,
+          null
         );
         const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
         const pages = await outPdf.copyPages(src, src.getPageIndices());
