@@ -225,19 +225,57 @@
         "left"
       );
     } else {
+      // Descrição em peso normal; "pág. x a y" em negrito
       lista.forEach((c, idx) => {
+        const size = SZ.comprovantesItem;
+        const lineH = 17;
         const pag =
           c.startPage === c.endPage
             ? `(pág. ${c.startPage})`
             : `(pág. ${c.startPage} a ${c.endPage})`;
-        const line = `${idx + 1}- ${c.title || c.name || "Comprovante"} ${pag}`;
-        drawLines(
-          wrap(line, font, SZ.comprovantesItem, maxW),
-          SZ.comprovantesItem,
-          false,
-          17,
-          "left"
-        );
+        const body = `${idx + 1}- ${c.title || c.name || "Comprovante"}`;
+        const lines = wrap(body, font, size, maxW);
+        const spaceW = font.widthOfTextAtSize(" ", size);
+        const pagW = fontBold.widthOfTextAtSize(pag, size);
+
+        lines.forEach((ln, i) => {
+          ensureSpace(lineH + 2);
+          const isLast = i === lines.length - 1;
+          const baseY = y - size;
+          page.drawText(ln, {
+            x: margin,
+            y: baseY,
+            size,
+            font,
+            color: black,
+          });
+          if (isLast) {
+            const lnW = font.widthOfTextAtSize(ln, size);
+            if (lnW + spaceW + pagW <= maxW) {
+              page.drawText(pag, {
+                x: margin + lnW + spaceW,
+                y: baseY,
+                size,
+                font: fontBold,
+                color: black,
+              });
+              y -= lineH;
+            } else {
+              y -= lineH;
+              ensureSpace(lineH + 2);
+              page.drawText(pag, {
+                x: margin,
+                y: y - size,
+                size,
+                font: fontBold,
+                color: black,
+              });
+              y -= lineH;
+            }
+          } else {
+            y -= lineH;
+          }
+        });
         y -= 6;
       });
     }
