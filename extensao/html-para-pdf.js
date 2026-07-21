@@ -1,9 +1,17 @@
 /**
- * Converte HTML completo (Requerimento / Memorial) em PDF visualmente fiel,
- * com brasão, logos e CSS — via html2pdf + renderização on-screen.
+ * HTML → PDF fiel (Requerimento / Memorial)
+ * ----------------------------------------------------------------------------
+ * Estratégia:
+ *  1) Documento self-contained (imagens em data URL)
+ *  2) Render no DOM principal (sem iframe — html2canvas falha/corta em iframe)
+ *  3) Captura ALTURA TOTAL (scrollHeight)
+ *  4) Fatia o canvas em páginas A4 com jsPDF
+ * ----------------------------------------------------------------------------
  */
 (function (global) {
   "use strict";
+
+  const PAGE_WIDTH_PX = 794; // ~A4 @ 96dpi
 
   function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
@@ -22,16 +30,12 @@
     try {
       const res = await fetch(url);
       if (!res.ok) return null;
-      const blob = await res.blob();
-      return await blobToDataUrl(blob);
+      return await blobToDataUrl(await res.blob());
     } catch {
       return null;
     }
   }
 
-  /**
-   * Mapa de assets do ZIP + fallbacks do site (brasão, logos).
-   */
   async function montarAssetMap(srcZip) {
     const map = {};
 
@@ -41,8 +45,7 @@
         if (f.dir) continue;
         if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(path)) continue;
         try {
-          const blob = await f.async("blob");
-          const dataUrl = await blobToDataUrl(blob);
+          const dataUrl = await blobToDataUrl(await f.async("blob"));
           const base = path.split("/").pop();
           map[base] = dataUrl;
           map[path] = dataUrl;
@@ -51,7 +54,6 @@
       }
     }
 
-    // Fallbacks locais do site (mesmos arquivos usados pelo app)
     const locais = [
       ["brasaodarepublica.png", "./brasaodarepublica.png"],
       ["brasao_instituicao.png", "./brasaodarepublica.png"],
@@ -59,7 +61,6 @@
       ["logo_uffs.png", "./logo-uffs.png"],
       ["logo-ufes.png", "./logo-ufes.png"],
       ["logo_instituicao.png", "./logo-uffs.png"],
-      ["logo_instituicao.png", "./logo-ufes.png"],
     ];
     for (const [key, url] of locais) {
       if (map[key]) continue;
@@ -69,14 +70,16 @@
         map["./" + key] = dataUrl;
       }
     }
-
+    // se logo_instituicao ainda vazio, tenta ufes
+    if (!map["logo_instituicao.png"]) {
+      const u = await fetchAsDataUrl("./logo-ufes.png");
+      if (u) map["logo_instituicao.png"] = u;
+    }
     return map;
   }
 
   function injectAssets(html, assetMap) {
     let out = String(html || "");
-
-    // src="..." / src='...'
     out = out.replace(/src\s*=\s*(["'])([^"']+)\1/gi, (full, q, src) => {
       const raw = String(src).trim();
       if (raw.startsWith("data:")) return full;
@@ -86,78 +89,41 @@
         assetMap[base] ||
         assetMap["./" + base] ||
         assetMap[decodeURIComponent(base)];
-      if (dataUrl) return `src=${q}${dataUrl}${q}`;
-      return full;
+      return dataUrl ? `src=${q}${dataUrl}${q}` : full;
     });
-
-    // url(...) em CSS inline
     out = out.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (full, q, src) => {
       const raw = String(src).trim();
       if (raw.startsWith("data:")) return full;
       const base = raw.split("/").pop().split("?")[0];
-      const dataUrl =
-        assetMap[raw] || assetMap[base] || assetMap["./" + base];
-      if (dataUrl) return `url("${dataUrl}")`;
-      return full;
+      const dataUrl = assetMap[raw] || assetMap[base] || assetMap["./" + base];
+      return dataUrl ? `url("${dataUrl}")` : full;
     });
-
     return out;
   }
 
-  function buildFullDocument(html) {
-    let work = String(html || "");
-
-    // Já é documento completo?
-    if (/<html[\s>]/i.test(work)) {
-      // garantir charset e fundo branco
-      if (!/<meta[^>]+charset/i.test(work)) {
-        work = work.replace(
-          /<head([^>]*)>/i,
-          '<head$1><meta charset="utf-8">'
-        );
-      }
-      return work;
-    }
-
-    // Extrair styles se houver fragmento
+  function extractParts(html) {
     const styles = [];
-    work.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, (m) => {
+    String(html).replace(/<style[^>]*>[\s\S]*?<\/style>/gi, (m) => {
       styles.push(m);
       return "";
     });
-    let body = work;
-    const bm = work.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    // link stylesheets — ignora (vamos injetar assets)
+    let body = html;
+    const bm = String(html).match(/<body[^>]*>([\s\S]*)<\/body>/i);
     if (bm) body = bm[1];
-
-    return `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  html, body {
-    margin: 0;
-    padding: 0;
-    background: #ffffff !important;
-    color: #111111 !important;
-    font-family: "Times New Roman", Times, Georgia, serif;
-  }
-  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; box-sizing: border-box; }
-  img { max-width: 100%; height: auto; }
-  table { border-collapse: collapse; }
-</style>
-${styles.join("\n")}
-</head>
-<body>
-${body}
-</body>
-</html>`;
+    else if (/<html[\s>]/i.test(html)) {
+      // body ausente: usa tudo sem head
+      body = String(html)
+        .replace(/<head[\s\S]*?<\/head>/i, "")
+        .replace(/<\/?html[^>]*>/gi, "");
+    }
+    body = body.replace(/<script[\s\S]*?<\/script>/gi, "");
+    return { styles: styles.join("\n"), body };
   }
 
-  function waitForImages(doc, timeoutMs) {
-    const imgs = Array.from(doc.images || []);
-    if (!imgs.length) return Promise.resolve();
-    return Promise.all(
+  async function waitImages(root, timeoutMs) {
+    const imgs = Array.from(root.querySelectorAll("img"));
+    await Promise.all(
       imgs.map(
         (img) =>
           new Promise((resolve) => {
@@ -165,126 +131,199 @@ ${body}
             const done = () => resolve();
             img.addEventListener("load", done, { once: true });
             img.addEventListener("error", done, { once: true });
-            setTimeout(done, timeoutMs || 5000);
+            setTimeout(done, timeoutMs || 8000);
           })
       )
     );
   }
 
+  function getHtml2Canvas() {
+    if (typeof global.html2canvas === "function") return global.html2canvas;
+    throw new Error("html2canvas não carregado");
+  }
+
+  function getJsPDF() {
+    const j =
+      (global.jspdf && global.jspdf.jsPDF) ||
+      global.jsPDF ||
+      (global.jspdf && global.jspdf.default);
+    if (!j) throw new Error("jsPDF não carregado");
+    return j;
+  }
+
   /**
-   * HTML string → PDF Uint8Array (layout fiel ao HTML original).
+   * Fatia um canvas alto em páginas A4 e devolve Uint8Array PDF.
    */
-  async function htmlParaPdfBytes(html, assetMap) {
-    if (!global.html2pdf) {
-      throw new Error("html2pdf não carregado");
+  function canvasToPdfBytes(canvas) {
+    const jsPDF = getJsPDF();
+    const pdf = new jsPDF({
+      unit: "mm",
+      format: "a4",
+      orientation: "portrait",
+      compress: true,
+    });
+
+    const pageW = pdf.internal.pageSize.getWidth(); // 210
+    const pageH = pdf.internal.pageSize.getHeight(); // 297
+    const margin = 8; // mm
+    const contentW = pageW - margin * 2;
+    const contentH = pageH - margin * 2;
+
+    // Largura do canvas → contentW mm
+    const pxPerMm = canvas.width / contentW;
+    const pageHeightPx = Math.floor(contentH * pxPerMm);
+
+    if (pageHeightPx < 50) {
+      throw new Error("Altura de página inválida na conversão PDF");
     }
 
-    let prepared = injectAssets(html, assetMap || {});
-    // Não reintroduzir coluna de paginação; se existir por engano, remove
-    prepared = prepared.replace(/<th[^>]*>\s*Comprovantes\s*<\/th>/gi, "");
-    prepared = buildFullDocument(prepared);
+    let y = 0;
+    let pageIndex = 0;
 
-    // Host visível (opacity mínima) — off-screen gera PDF em branco no html2canvas
+    while (y < canvas.height) {
+      const sliceH = Math.min(pageHeightPx, canvas.height - y);
+      const slice = document.createElement("canvas");
+      slice.width = canvas.width;
+      slice.height = sliceH;
+      const ctx = slice.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, slice.width, slice.height);
+      ctx.drawImage(
+        canvas,
+        0,
+        y,
+        canvas.width,
+        sliceH,
+        0,
+        0,
+        canvas.width,
+        sliceH
+      );
+
+      const imgData = slice.toDataURL("image/jpeg", 0.92);
+      const sliceHmm = sliceH / pxPerMm;
+
+      if (pageIndex > 0) pdf.addPage();
+      pdf.addImage(imgData, "JPEG", margin, margin, contentW, sliceHmm, undefined, "FAST");
+
+      y += sliceH;
+      pageIndex++;
+      // segurança
+      if (pageIndex > 80) break;
+    }
+
+    if (pageIndex === 0) throw new Error("Nenhuma página gerada no PDF");
+
+    const ab = pdf.output("arraybuffer");
+    return new Uint8Array(ab);
+  }
+
+  /**
+   * HTML → PDF Uint8Array
+   */
+  async function htmlParaPdfBytes(html, assetMap) {
+    const h2c = getHtml2Canvas();
+    getJsPDF();
+
+    let prepared = injectAssets(html, assetMap || {});
+    prepared = prepared.replace(/<th[^>]*>\s*Comprovantes\s*<\/th>/gi, "");
+    const parts = extractParts(prepared);
+
+    // Host no documento principal — largura fixa A4
     const host = document.createElement("div");
-    host.setAttribute("data-rsc-html2pdf", "1");
+    host.setAttribute("data-rsc-pdf-host", "1");
     host.style.cssText = [
       "position:fixed",
       "left:0",
       "top:0",
-      "width:794px",
-      "max-width:794px",
+      "width:" + PAGE_WIDTH_PX + "px",
+      "max-width:" + PAGE_WIDTH_PX + "px",
       "background:#ffffff",
       "color:#111111",
-      "z-index:2147483000",
-      "opacity:0.02",
+      "z-index:2147483646",
+      // precisa ser “visível” para o motor de layout; opacity baixa ok
+      "opacity:0.05",
       "pointer-events:none",
       "overflow:visible",
-      "padding:0",
       "margin:0",
+      "padding:0",
+      "box-sizing:border-box",
     ].join(";");
 
-    // iframe isola estilos e recria documento completo (brasão + CSS)
-    const iframe = document.createElement("iframe");
-    iframe.setAttribute("title", "rsc-html-pdf");
-    iframe.style.cssText =
-      "width:794px;min-height:1123px;border:0;display:block;background:#fff;";
-    host.appendChild(iframe);
+    const shell = document.createElement("div");
+    shell.style.cssText =
+      "width:" +
+      PAGE_WIDTH_PX +
+      "px;background:#fff;color:#111;box-sizing:border-box;padding:12px 16px;";
+    shell.innerHTML =
+      (parts.styles || "") +
+      `<style>
+        html,body{background:#fff!important;color:#111!important;}
+        *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;box-sizing:border-box;}
+        img{max-width:100%;height:auto;}
+        table{border-collapse:collapse;width:100%;}
+        .dark, .dark *{background:transparent!important;color:#111!important;}
+      </style>` +
+      (parts.body || "");
+
+    host.appendChild(shell);
     document.body.appendChild(host);
 
     try {
-      const idoc = iframe.contentDocument || iframe.contentWindow.document;
-      idoc.open();
-      idoc.write(prepared);
-      idoc.close();
+      await waitImages(shell, 8000);
+      try {
+        if (document.fonts && document.fonts.ready) await document.fonts.ready;
+      } catch (_) {}
+      await sleep(250);
 
-      await new Promise((resolve) => {
-        if (idoc.readyState === "complete") resolve();
-        else iframe.addEventListener("load", () => resolve(), { once: true });
-        setTimeout(resolve, 1500);
+      // Força reflow e mede altura real
+      const fullHeight = Math.max(
+        shell.scrollHeight,
+        shell.offsetHeight,
+        shell.getBoundingClientRect().height
+      );
+      if (fullHeight < 40) {
+        throw new Error("Conteúdo HTML sem altura mensurável (vazio?)");
+      }
+
+      const canvas = await h2c(shell, {
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: "#ffffff",
+        logging: false,
+        width: PAGE_WIDTH_PX,
+        windowWidth: PAGE_WIDTH_PX,
+        height: Math.ceil(fullHeight),
+        windowHeight: Math.ceil(fullHeight),
+        x: 0,
+        y: 0,
+        scrollX: 0,
+        scrollY: 0,
+        foreignObjectRendering: false,
+        imageTimeout: 15000,
+        onclone: (clonedDoc) => {
+          try {
+            const el = clonedDoc.querySelector("[data-rsc-pdf-host] > div");
+            if (el) {
+              el.style.opacity = "1";
+              el.style.background = "#ffffff";
+              el.style.color = "#111111";
+            }
+            clonedDoc.body.style.background = "#ffffff";
+          } catch (_) {}
+        },
       });
 
-      // Força tema claro no documento impresso
-      try {
-        const fix = idoc.createElement("style");
-        fix.textContent = `
-          html, body { background:#fff !important; color:#111 !important; }
-          body { width: 794px !important; margin: 0 auto !important; }
-          .dark, .dark body { background:#fff !important; color:#111 !important; }
-          * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-        `;
-        (idoc.head || idoc.documentElement).appendChild(fix);
-      } catch (_) {}
+      if (!canvas || canvas.width < 10 || canvas.height < 10) {
+        throw new Error("html2canvas retornou canvas vazio");
+      }
 
-      await waitForImages(idoc, 6000);
-      await sleep(300);
-
-      // Ajusta altura do iframe ao conteúdo
-      try {
-        const h = Math.max(
-          idoc.body.scrollHeight,
-          idoc.documentElement.scrollHeight,
-          1123
-        );
-        iframe.style.height = h + "px";
-      } catch (_) {}
-
-      await sleep(150);
-
-      const target = idoc.body;
-      const worker = global
-        .html2pdf()
-        .set({
-          margin: [10, 10, 12, 10],
-          filename: "documento.pdf",
-          image: { type: "jpeg", quality: 0.98 },
-          html2canvas: {
-            scale: 2,
-            useCORS: true,
-            allowTaint: true,
-            logging: false,
-            backgroundColor: "#ffffff",
-            windowWidth: 794,
-            scrollX: 0,
-            scrollY: 0,
-            onclone: (clonedDoc) => {
-              try {
-                const b = clonedDoc.body;
-                if (b) {
-                  b.style.background = "#ffffff";
-                  b.style.color = "#111111";
-                }
-              } catch (_) {}
-            },
-          },
-          jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-          pagebreak: { mode: ["css", "legacy"] },
-          enableLinks: false,
-        })
-        .from(target);
-
-      const ab = await worker.outputPdf("arraybuffer");
-      const bytes = new Uint8Array(ab);
-      if (!bytes.length) throw new Error("PDF gerado vazio");
+      const bytes = canvasToPdfBytes(canvas);
+      // magia %PDF
+      const head = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+      if (head !== "%PDF") throw new Error("Saída não é PDF válido");
+      if (bytes.length < 2000) throw new Error("PDF suspeitamente pequeno");
       return bytes;
     } finally {
       try {
@@ -298,5 +337,6 @@ ${body}
     montarAssetMap,
     injectAssets,
     blobToDataUrl,
+    canvasToPdfBytes,
   };
 })(typeof window !== "undefined" ? window : globalThis);

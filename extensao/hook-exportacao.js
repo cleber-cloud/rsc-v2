@@ -1,11 +1,8 @@
 /**
- * =============================================================================
- * Exportação consolidada — somente PDFs (máx. 8)
- * =============================================================================
- * 01 - Requerimento_RSC.pdf  ← HTML original (brasão/logos) → PDF fiel
- * 02 - Memorial_Descritivo.pdf ← idem
- * 03+ - Anexo I … VI (capas + comprovantes)
- * =============================================================================
+ * Exportação consolidada — PDFs (máx. 8)
+ * 01 Requerimento (HTML original → PDF fiel)
+ * 02 Memorial (HTML original → PDF fiel)
+ * 03+ Anexos I–VI
  */
 (function () {
   "use strict";
@@ -13,7 +10,6 @@
   const IDB_NAME = "keyval-store";
   const IDB_STORE = "keyval";
   const STATE_KEY = "rsc-calculator-state";
-
   let processing = false;
 
   function toast(msg, type) {
@@ -24,7 +20,7 @@
       el.setAttribute("role", "status");
       el.style.cssText =
         "position:fixed;bottom:1.25rem;left:50%;transform:translateX(-50%);z-index:99999;" +
-        "max-width:min(32rem,92vw);padding:0.75rem 1rem;border-radius:0.75rem;font:600 13px/1.4 system-ui,sans-serif;" +
+        "max-width:min(36rem,92vw);padding:0.75rem 1rem;border-radius:0.75rem;font:600 13px/1.4 system-ui,sans-serif;" +
         "box-shadow:0 12px 40px rgba(0,0,0,.18);color:#fff;" +
         (type === "error"
           ? "background:#b91c1c;"
@@ -33,7 +29,7 @@
             : "background:#0f766e;");
       el.textContent = msg;
       document.body.appendChild(el);
-      setTimeout(() => el.remove(), type === "error" ? 8000 : 4500);
+      setTimeout(() => el.remove(), type === "error" ? 9000 : 4500);
     } catch (_) {}
   }
 
@@ -81,37 +77,12 @@
     return zip.file(exact) || (zip.file(pattern) || [])[0] || null;
   }
 
-  /**
-   * Converte HTML do pacote original → PDF visual (brasão etc.).
-   * Fallback: pdf-lib simplificado se html2pdf falhar.
-   */
-  async function htmlDocToPdf(html, assetMap, kind, state) {
-    try {
-      return await window.RSCHtmlParaPdf.htmlParaPdfBytes(html, assetMap);
-    } catch (err) {
-      console.warn("[RSC Export] html2pdf falhou (" + kind + "):", err);
-      toast(
-        "Conversão visual do " +
-          kind +
-          " falhou; usando layout alternativo. " +
-          (err.message || ""),
-        "error"
-      );
-      if (kind === "Requerimento" && window.RSCPdfDocumentos) {
-        return window.RSCPdfDocumentos.gerarRequerimentoPdf(state);
-      }
-      if (kind === "Memorial" && window.RSCPdfDocumentos) {
-        return window.RSCPdfDocumentos.gerarMemorialPdf(state);
-      }
-      throw err;
-    }
-  }
-
   async function montarPacotePdfs(originalZipBlob) {
     if (!window.JSZip) throw new Error("JSZip não carregado");
     if (!window.RSCAnexosConsolidados) throw new Error("Módulo de anexos não carregado");
-    if (!window.PDFLib) throw new Error("PDFLib não carregado");
     if (!window.RSCHtmlParaPdf) throw new Error("Conversor HTML→PDF não carregado");
+    if (!window.html2canvas) throw new Error("html2canvas não carregado");
+    if (!(window.jspdf || window.jsPDF)) throw new Error("jsPDF não carregado");
 
     const state = await loadState();
     if (!state) throw new Error("Estado do formulário não encontrado no navegador");
@@ -137,33 +108,22 @@
     const out = new JSZip();
     let seq = 1;
 
-    // 01 Requerimento — HTML original do app
-    const reqFile = pickZipFile(
-      srcZip,
-      "Requerimento_RSC.html",
-      /Requerimento.*\.html$/i
-    );
+    const reqFile = pickZipFile(srcZip, "Requerimento_RSC.html", /Requerimento.*\.html$/i);
     if (!reqFile) throw new Error("Requerimento_RSC.html não encontrado no pacote");
-    toast("Convertendo Requerimento (layout original)…", "info");
+    toast("Convertendo Requerimento (página inteira)…", "info");
     const reqHtml = await reqFile.async("string");
-    const reqPdf = await htmlDocToPdf(reqHtml, assetMap, "Requerimento", state);
+    const reqPdf = await window.RSCHtmlParaPdf.htmlParaPdfBytes(reqHtml, assetMap);
     out.file(`${pad2(seq)} - Requerimento_RSC.pdf`, reqPdf);
     seq++;
 
-    // 02 Memorial — HTML original do app
-    const memFile = pickZipFile(
-      srcZip,
-      "Memorial_Descritivo.html",
-      /Memorial.*\.html$/i
-    );
+    const memFile = pickZipFile(srcZip, "Memorial_Descritivo.html", /Memorial.*\.html$/i);
     if (!memFile) throw new Error("Memorial_Descritivo.html não encontrado no pacote");
-    toast("Convertendo Memorial (layout original)…", "info");
+    toast("Convertendo Memorial (página inteira)…", "info");
     const memHtml = await memFile.async("string");
-    const memPdf = await htmlDocToPdf(memHtml, assetMap, "Memorial", state);
+    const memPdf = await window.RSCHtmlParaPdf.htmlParaPdfBytes(memHtml, assetMap);
     out.file(`${pad2(seq)} - Memorial_Descritivo.pdf`, memPdf);
     seq++;
 
-    // 03+ Anexos I–VI
     if (window.RSCPdfFontes) {
       try {
         await window.RSCPdfFontes.loadFontBytes();
@@ -173,11 +133,10 @@
     }
 
     toast("Gerando Anexos I–VI com capas…", "info");
-    const order = window.RSC_CRITERIOS_ORDEM || [];
     const { anexos } = await window.RSCAnexosConsolidados.montarAnexosPorCategoria({
       selections: state.selections || [],
       documents: state.documents || [],
-      criteriaOrder: order,
+      criteriaOrder: window.RSC_CRITERIOS_ORDEM || [],
       criteriaMeta: window.RSC_CRITERIOS_META,
       categorias: window.RSC_CATEGORIAS,
     });
@@ -202,7 +161,6 @@
 
   function installDownloadHook() {
     const nativeClick = HTMLAnchorElement.prototype.click;
-
     HTMLAnchorElement.prototype.click = function patchedClick() {
       try {
         if (
@@ -213,9 +171,8 @@
         ) {
           const href = this.href;
           const download = String(this.download || "RSC_TAE_Consolidado.zip");
-
           processing = true;
-          toast("Preparando pacote (PDFs fiéis ao HTML)…", "info");
+          toast("Preparando pacote PDF…", "info");
 
           (async () => {
             try {
@@ -228,10 +185,7 @@
               a.download = download.replace(/\.zip$/i, "_PDFs.zip");
               nativeClick.call(a);
               setTimeout(() => URL.revokeObjectURL(url), 4000);
-              toast(
-                "Pacote pronto: Requerimento e Memorial com layout original + Anexos.",
-                "success"
-              );
+              toast("Pacote pronto.", "success");
             } catch (err) {
               console.error("[RSC Extensão]", err);
               toast(err.message || "Falha ao gerar pacote PDF.", "error");
@@ -249,10 +203,7 @@
       }
       return nativeClick.apply(this, arguments);
     };
-
-    console.info(
-      "[RSC Export] Requerimento/Memorial = HTML original→PDF; Anexos I–VI com capas."
-    );
+    console.info("[RSC Export] HTML→PDF por captura total + fatias A4.");
   }
 
   if (document.readyState === "loading") {
@@ -261,8 +212,5 @@
     installDownloadHook();
   }
 
-  window.RSCExtensaoExportacao = {
-    montarPacotePdfs,
-    loadState,
-  };
+  window.RSCExtensaoExportacao = { montarPacotePdfs, loadState };
 })();
