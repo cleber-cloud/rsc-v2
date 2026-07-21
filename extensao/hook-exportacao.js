@@ -83,16 +83,10 @@
   }
 
   /**
-   * Copia do ZIP original apenas assets de logo/brasão (não Anexos/).
+   * Copia só o brasão (os HTMLs usam brasão, não o logo da instituição).
    */
   async function copiarAssetsVisuais(srcZip, outZip) {
-    const wanted = [
-      /^logo_instituicao\.(png|jpe?g|svg)$/i,
-      /^brasao_instituicao\.(png|jpe?g|svg)$/i,
-      /^logo[_-]?uffs\.(png|jpe?g|svg)$/i,
-      /^logo[_-]?ufes\.(png|jpe?g|svg)$/i,
-      /^brasao/i,
-    ];
+    const wanted = [/^brasao_instituicao\.(png|jpe?g|svg)$/i, /^brasao/i];
     const added = new Set();
 
     for (const path of Object.keys(srcZip.files)) {
@@ -100,35 +94,28 @@
       if (f.dir) continue;
       if (/^anexos\//i.test(path)) continue;
       const base = path.split("/").pop();
+      // não incluir logo da instituição
+      if (/^logo/i.test(base)) continue;
       if (!wanted.some((re) => re.test(base) || re.test(path))) continue;
       if (added.has(base)) continue;
       outZip.file(base, await f.async("uint8array"));
       added.add(base);
     }
 
-    // Fallbacks do site se o ZIP não trouxe
-    async function ensureLocal(name, urls) {
-      if (added.has(name)) return;
-      for (const url of urls) {
+    // Fallback se o ZIP não trouxe brasão e o HTML usar caminho relativo
+    if (![...added].some((n) => /brasao/i.test(n))) {
+      for (const url of ["./brasaodarepublica.png", "./brasao_instituicao.png"]) {
         try {
           const res = await fetch(url);
           if (!res.ok) continue;
-          const buf = new Uint8Array(await res.arrayBuffer());
-          outZip.file(name, buf);
-          added.add(name);
-          return;
+          outZip.file(
+            "brasao_instituicao.png",
+            new Uint8Array(await res.arrayBuffer())
+          );
+          break;
         } catch (_) {}
       }
     }
-    await ensureLocal("brasao_instituicao.png", [
-      "./brasaodarepublica.png",
-      "./brasao_instituicao.png",
-    ]);
-    await ensureLocal("logo_instituicao.png", [
-      "./logo-uffs.png",
-      "./logo-ufes.png",
-      "./logo_instituicao.png",
-    ]);
   }
 
   /**
@@ -142,10 +129,10 @@
       /<td[^>]*>\s*(N[aã]o anexado|P[aá]g\.|Anexo P[aá]g)[\s\S]*?<\/td>/gi,
       ""
     );
-    // caminhos relativos comuns → nome do arquivo na raiz
+    // brasão relativo → raiz do pacote
     out = out.replace(
-      /src=(["'])(?:\.\/)?(?:[^"']*\/)?(logo_instituicao\.(?:png|jpe?g|svg)|brasao_instituicao\.(?:png|jpe?g|svg))\1/gi,
-      'src=$1$2$1'
+      /src=(["'])(?:\.\/)?(?:[^"']*\/)?(brasao_instituicao\.(?:png|jpe?g|svg))\1/gi,
+      "src=$1$2$1"
     );
     return out;
   }
